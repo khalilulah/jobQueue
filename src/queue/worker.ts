@@ -2,6 +2,7 @@ import { redis, createBlockingConnection } from "../config/redis";
 import { QUEUE_KEYS } from "./keys";
 import { Job } from "./types";
 import { jobRegistry } from "../jobs/registry";
+import { handleFailure } from "./retry";
 
 /**
  * Starts an infinite worker loop on a dedicated blocking connection.
@@ -62,6 +63,6 @@ async function processJob(rawJob: string): Promise<void> {
     console.log(`[worker] job ${job.id} completed and removed from processing`);
   } catch (err) {
     console.error(`[worker] job ${job.id} failed:`, (err as Error).message);
-    // Failure handling (retry/backoff/DLQ) comes next — left as a stub.
+    await handleFailure(rawJob, job, err as Error);
   }
 }
