@@ -1,5 +1,6 @@
 import { startWorker } from "./queue/worker";
 import { enqueue } from "./queue/producer";
+import { startDelayedJobPoller } from "./queue/delayed";
 
 async function main() {
   // Start the worker loop. We deliberately do NOT await this — startWorker()
@@ -9,6 +10,14 @@ async function main() {
   // run concurrently within the same process.
   startWorker().catch((err) => {
     console.error("[worker] fatal error:", err);
+    process.exit(1);
+  });
+
+  // Same reasoning: the poller's while(true) loop never resolves on its
+  // own, so it also runs un-awaited, concurrently with the worker and the
+  // producer calls below.
+  startDelayedJobPoller().catch((err) => {
+    console.error("[poller] fatal error:", err);
     process.exit(1);
   });
 
