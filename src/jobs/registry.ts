@@ -1,4 +1,5 @@
 import { alwaysFailsHandler } from "./handlers/alwaysFails";
+import { hangsForeverHandler } from "./handlers/hangsForever";
 import { sendWelcomeEmailHandler } from "./handlers/sendWelcomeEmail";
 
 // Maps a job's `type` string to the function that knows how to actually do it.
@@ -7,4 +8,5 @@ import { sendWelcomeEmailHandler } from "./handlers/sendWelcomeEmail";
 export const jobRegistry: Record<string, (payload: any) => Promise<void>> = {
   send_welcome_email: sendWelcomeEmailHandler,
   always_fails: alwaysFailsHandler,
+  hangs_forever: hangsForeverHandler,
 };

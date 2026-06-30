@@ -1,5 +1,6 @@
 import { redis } from "../config/redis";
 import { QUEUE_KEYS } from "./keys";
+import { Job } from "./types";
 
 const POLL_INTERVAL_MS = 1000;
 
@@ -52,8 +53,23 @@ async function moveToPending(rawJob: string): Promise<void> {
   const removedCount = await redis.zrem(QUEUE_KEYS.delayed, rawJob);
 
   if (removedCount === 1) {
-    await redis.rpush(QUEUE_KEYS.pending, rawJob);
-    console.log("[poller] moved due job from delayed -> pending");
+    // We need to know which priority tier this job belongs in — it was
+    // carried all the way through from the original enqueue() call, so
+    // parsing the job is enough to route it correctly.
+    //
+    // Fallback to 'medium' guards against jobs written to Redis before the
+    // `priority` field existed — JSON.parse doesn't actually verify the
+    // shape matches `Job`, it just trusts the type annotation, so old data
+    // genuinely can be missing this field at runtime. TypeScript's error
+    // here was correctly flagging that real possibility, not being overly
+    // cautious — without this fallback, an old job would crash trying to
+    // index `undefined` into QUEUE_KEYS.pending.
+    const job: Job = JSON.parse(rawJob);
+    const priority = job.priority ?? "medium";
+    const targetList = QUEUE_KEYS.pending[priority];
+
+    await redis.rpush(targetList, rawJob);
+    console.log(`[poller] moved due job from delayed -> pending:${priority}`);
   }
 }
 

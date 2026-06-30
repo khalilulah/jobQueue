@@ -1,57 +1,82 @@
-import { startWorker } from "./queue/worker";
-import { enqueue } from "./queue/producer";
+import {
+  startWorker,
+  requestShutdown,
+  waitForActiveJobs,
+} from "./queue/worker";
 import { startDelayedJobPoller } from "./queue/delayed";
+import { startReaper } from "./queue/reaper";
+import { enqueue } from "./queue/producer";
 
 async function main() {
-  // Start the worker loop. We deliberately do NOT await this — startWorker()
-  // contains a `while (true)` loop that never resolves, so awaiting it here
-  // would block this function from ever reaching the enqueue() calls below.
-  // Letting it run un-awaited is exactly what lets producer and worker code
-  // run concurrently within the same process.
+  // ISOLATED SHUTDOWN TEST — single hangs_forever job, worker only.
+  // Poller and reaper are deliberately NOT started here, so the only thing
+  // that can end this job's processing is either (a) the handler itself
+  // finishing 60s later, or (b) our shutdown timeout forcing an exit. This
+  // isolates exactly what we're testing: does Ctrl+C wait up to
+  // SHUTDOWN_TIMEOUT_MS and then force-exit, rather than hanging forever
+  // OR exiting instantly.
+  const hangId = await enqueue({
+    type: "hangs_forever",
+    payload: {},
+  });
+  console.log("[producer] enqueued job:", hangId);
+  console.log("[test] job enqueued, starting worker now...");
+
   startWorker().catch((err) => {
     console.error("[worker] fatal error:", err);
     process.exit(1);
   });
 
-  // Same reasoning: the poller's while(true) loop never resolves on its
-  // own, so it also runs un-awaited, concurrently with the worker and the
-  // producer calls below.
-  startDelayedJobPoller().catch((err) => {
-    console.error("[poller] fatal error:", err);
-    process.exit(1);
-  });
-
-  // Act as a producer: push a couple of test jobs in, a moment apart,
-  // so you can watch the worker pick each one up live in the same log output.
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-
-  const id1 = await enqueue({
-    type: "send_welcome_email",
-    payload: { userId: 1, email: "khalil@example.com" },
-  });
-  console.log("[producer] enqueued job:", id1);
-
-  await new Promise((resolve) => setTimeout(resolve, 2000));
-
-  const id2 = await enqueue({
-    type: "send_welcome_email",
-    payload: { userId: 2, email: "someone@example.com" },
-  });
-  console.log("[producer] enqueued job:", id2);
-
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-
-  // Deliberately failing job, with a low maxRetries so we can watch it
-  // exhaust retries and land in the dead-letter queue without waiting long.
-  const id3 = await enqueue({
-    type: "always_fails",
-    payload: {},
-    maxRetries: 2,
-  });
-  console.log("[producer] enqueued job:", id3);
-
-  // No process.exit() here — the worker's while(true) loop must keep the
-  // process alive indefinitely, the same way it would in production.
+  // poller and reaper intentionally not started for this isolated test
 }
+
+const SHUTDOWN_TIMEOUT_MS = 15000; // give in-flight jobs up to 15s, then force-exit anyway
+
+/**
+ * Handles SIGINT (Ctrl+C) and SIGTERM (sent by process managers, Docker,
+ * Kubernetes, etc. when they want a process to stop). The goal: never let
+ * the process die while a handler is mid-execution — that's exactly the
+ * "abandoned in-flight call" problem we saw with the hangsForever test.
+ *
+ * Sequence: stop the worker loop from claiming NEW jobs, then wait for
+ * whatever job is currently running (if any) to actually finish, THEN
+ * exit. Note this only protects against an orderly shutdown request — it
+ * does nothing for a hard crash or `kill -9`, which is a separate concern
+ * the reaper exists to cover.
+ *
+ * Crucially: we only wait up to SHUTDOWN_TIMEOUT_MS. If a handler is
+ * unbounded (or just much slower than expected), waiting forever would
+ * defeat the entire purpose of being able to deploy/restart promptly.
+ * After the timeout, we force-exit anyway — the in-flight job becomes
+ * exactly the same kind of abandoned call the reaper already knows how
+ * to recover, once its visibility timeout elapses on the next worker.
+ */
+async function handleShutdownSignal(signal: string): Promise<void> {
+  console.log(
+    `[shutdown] received ${signal}, finishing in-flight work before exit...`,
+  );
+
+  requestShutdown();
+
+  const timeout = new Promise<"timeout">((resolve) =>
+    setTimeout(() => resolve("timeout"), SHUTDOWN_TIMEOUT_MS),
+  );
+  const finished = waitForActiveJobs().then(() => "finished" as const);
+
+  const result = await Promise.race([finished, timeout]);
+
+  if (result === "timeout") {
+    console.warn(
+      `[shutdown] timed out after ${SHUTDOWN_TIMEOUT_MS}ms waiting for in-flight work — forcing exit. Any abandoned job will be recovered by the reaper on its next sweep.`,
+    );
+  } else {
+    console.log("[shutdown] clean shutdown complete, exiting");
+  }
+
+  process.exit(0);
+}
+
+process.on("SIGINT", () => handleShutdownSignal("SIGINT"));
+process.on("SIGTERM", () => handleShutdownSignal("SIGTERM"));
 
 main();

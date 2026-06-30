@@ -1,16 +1,17 @@
 import { randomUUID } from "crypto";
 import { redis } from "../config/redis";
-import { QUEUE_KEYS } from "./keys";
+import { QUEUE_KEYS, Priority } from "./keys";
 import { Job, EnqueueOptions } from "./types";
 
 const DEFAULT_MAX_RETRIES = 3;
+const DEFAULT_PRIORITY: Priority = "medium";
 
 /**
- * Adds a new job to the pending queue, ready for any worker to pick up.
- *
- * Mechanically this is just RPUSH onto queue:pending — the "push right, pop left"
- * convention we settled on for FIFO ordering. The interesting part isn't the
- * Redis call, it's building a complete, well-formed Job object before it goes in.
+ * Adds a new job to the appropriate priority-tiered pending list, ready
+ * for any worker to pick up. Mechanically this is just RPUSH onto one of
+ * the three queue:pending:* lists — the interesting part is the worker
+ * checking those lists in priority order, which is where priority
+ * actually takes effect (see worker.ts).
  */
 export async function enqueue<TPayload>(
   options: EnqueueOptions<TPayload>,
@@ -21,14 +22,13 @@ export async function enqueue<TPayload>(
     payload: options.payload,
     attempts: 0,
     maxRetries: options.maxRetries ?? DEFAULT_MAX_RETRIES,
+    priority: options.priority ?? DEFAULT_PRIORITY,
     createdAt: Date.now(),
   };
 
-  // Redis lists store strings, not objects — every value crossing the
-  // network to Redis has to be serialized. JSON is the obvious choice:
-  // human-readable (you can inspect it with redis-cli for debugging),
-  // and trivially parsed back into the same shape on the way out.
-  await redis.rpush(QUEUE_KEYS.pending, JSON.stringify(job));
+  const targetList = QUEUE_KEYS.pending[job.priority];
+
+  await redis.rpush(targetList, JSON.stringify(job));
 
   return job.id;
 }

@@ -1,4 +1,7 @@
 // The full shape of a job as it's stored, serialized, in Redis.
+
+import { Priority } from "./keys";
+
 // Every list/set in this system (pending, processing, delayed, dead) stores jobs in exactly this shape, JSON-stringified.
 export interface Job<TPayload = unknown> {
   id: string;
@@ -6,7 +9,9 @@ export interface Job<TPayload = unknown> {
   payload: TPayload;
   attempts: number;
   maxRetries: number;
+  priority: Priority; // defaults to 'medium' in producer.ts
   createdAt: number; // unix ms timestamp
+  processingStartedAt?: number; // unix ms timestamp, set when a worker claims the job
 }
 
 // What the caller of enqueue() actually has to provide.
@@ -15,4 +20,5 @@ export interface EnqueueOptions<TPayload = unknown> {
   type: string;
   payload: TPayload;
   maxRetries?: number; // defaults applied in producer.ts
+  priority?: Priority; // defaults to 'medium' in producer.ts
 }
