@@ -9,6 +9,19 @@ let shuttingDown = false;
 let activeJobCount = 0;
 
 /**
+ * Resets worker state between tests. Because Jest runs test files in the
+ * same process (with maxWorkers: 1), module-level variables like
+ * `shuttingDown` persist across files — without this reset, a test that
+ * calls requestShutdown() would leave shuttingDown=true permanently,
+ * causing every subsequent test's worker loop to exit immediately on its
+ * first iteration.
+ */
+export function resetWorkerState(): void {
+  shuttingDown = false;
+  activeJobCount = 0;
+}
+
+/**
  * Signals the worker loop to stop picking up NEW jobs after its current
  * blocking call returns. Does not interrupt a job already in progress —
  * see waitForActiveJobs() for how the caller waits for in-flight work to

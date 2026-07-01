@@ -5,51 +5,46 @@ import {
 } from "./queue/worker";
 import { startDelayedJobPoller } from "./queue/delayed";
 import { startReaper } from "./queue/reaper";
-import { enqueue } from "./queue/producer";
 
-async function main() {
-  // ISOLATED SHUTDOWN TEST — single hangs_forever job, worker only.
-  // Poller and reaper are deliberately NOT started here, so the only thing
-  // that can end this job's processing is either (a) the handler itself
-  // finishing 60s later, or (b) our shutdown timeout forcing an exit. This
-  // isolates exactly what we're testing: does Ctrl+C wait up to
-  // SHUTDOWN_TIMEOUT_MS and then force-exit, rather than hanging forever
-  // OR exiting instantly.
-  const hangId = await enqueue({
-    type: "hangs_forever",
-    payload: {},
-  });
-  console.log("[producer] enqueued job:", hangId);
-  console.log("[test] job enqueued, starting worker now...");
+const SHUTDOWN_TIMEOUT_MS = 15000; // give in-flight jobs up to 15s, then force-exit anyway
 
+async function main(): Promise<void> {
+  console.log("[main] starting job queue system...");
+
+  // Each of these contains a `while (true)` loop that never resolves on
+  // its own, so each is started un-awaited — this is what lets the worker,
+  // poller, and reaper all run concurrently within this single process.
+  // (In a real deployment, these would more likely be separate processes/
+  // containers, scaled independently — combining them here is a local-dev
+  // convenience, not a structural requirement.)
   startWorker().catch((err) => {
     console.error("[worker] fatal error:", err);
     process.exit(1);
   });
 
-  // poller and reaper intentionally not started for this isolated test
-}
+  startDelayedJobPoller().catch((err) => {
+    console.error("[poller] fatal error:", err);
+    process.exit(1);
+  });
 
-const SHUTDOWN_TIMEOUT_MS = 15000; // give in-flight jobs up to 15s, then force-exit anyway
+  startReaper().catch((err) => {
+    console.error("[reaper] fatal error:", err);
+    process.exit(1);
+  });
+
+  console.log("[main] all processes started");
+}
 
 /**
  * Handles SIGINT (Ctrl+C) and SIGTERM (sent by process managers, Docker,
- * Kubernetes, etc. when they want a process to stop). The goal: never let
- * the process die while a handler is mid-execution — that's exactly the
- * "abandoned in-flight call" problem we saw with the hangsForever test.
+ * Kubernetes, etc.) for an orderly shutdown: stop claiming new jobs, wait
+ * for any in-flight job to finish, then exit — bounded by
+ * SHUTDOWN_TIMEOUT_MS so an unexpectedly slow handler can't block a
+ * deploy/restart indefinitely. If the timeout is hit, the abandoned job
+ * is left for the reaper to reclaim on the next worker's first sweep.
  *
- * Sequence: stop the worker loop from claiming NEW jobs, then wait for
- * whatever job is currently running (if any) to actually finish, THEN
- * exit. Note this only protects against an orderly shutdown request — it
- * does nothing for a hard crash or `kill -9`, which is a separate concern
- * the reaper exists to cover.
- *
- * Crucially: we only wait up to SHUTDOWN_TIMEOUT_MS. If a handler is
- * unbounded (or just much slower than expected), waiting forever would
- * defeat the entire purpose of being able to deploy/restart promptly.
- * After the timeout, we force-exit anyway — the in-flight job becomes
- * exactly the same kind of abandoned call the reaper already knows how
- * to recover, once its visibility timeout elapses on the next worker.
+ * This only covers an orderly shutdown request — it does nothing for a
+ * hard crash or `kill -9`, which the reaper covers separately.
  */
 async function handleShutdownSignal(signal: string): Promise<void> {
   console.log(
@@ -67,7 +62,7 @@ async function handleShutdownSignal(signal: string): Promise<void> {
 
   if (result === "timeout") {
     console.warn(
-      `[shutdown] timed out after ${SHUTDOWN_TIMEOUT_MS}ms waiting for in-flight work — forcing exit. Any abandoned job will be recovered by the reaper on its next sweep.`,
+      `[shutdown] timed out after ${SHUTDOWN_TIMEOUT_MS}ms waiting for in-flight work — forcing exit. Any abandoned job will be recovered by the reaper.`,
     );
   } else {
     console.log("[shutdown] clean shutdown complete, exiting");
