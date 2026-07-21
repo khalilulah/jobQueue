@@ -1,9 +1,10 @@
 import { redis, createBlockingConnection } from "../config/redis";
-import { QUEUE_KEYS, PRIORITY_ORDER } from "./keys";
+import { QUEUE_KEYS, PRIORITY_ORDER, COMPLETED_LOG_MAX } from "./keys";
 import { Job } from "./types";
 import { jobRegistry } from "../jobs/registry";
 import { handleFailure } from "./retry";
 import { sleep } from "./reaper";
+import { queueEvents } from "../events/queueEvents";
 
 let shuttingDown = false;
 let activeJobCount = 0;
@@ -125,6 +126,15 @@ async function processJob(rawJob: string): Promise<void> {
 
   console.log(`[worker] picked up job ${job.id} (type: ${job.type})`);
 
+  // NEW: tell the event bus this job has started. The WebSocket layer
+  // will forward this to every connected browser immediately.
+  queueEvents.emit("job:started", {
+    jobId: job.id,
+    type: job.type,
+    priority: job.priority,
+    startedAt: stampedJob.processingStartedAt!,
+  });
+
   const handler = jobRegistry[job.type];
 
   if (!handler) {
@@ -145,6 +155,33 @@ async function processJob(rawJob: string): Promise<void> {
     await redis.lrem(QUEUE_KEYS.processing, 1, stampedRawJob);
 
     console.log(`[worker] job ${job.id} completed and removed from processing`);
+
+    // NEW: write a completed record. We store a lightweight summary
+    // (not the full payload, which could be large) so the dashboard can
+    // show recent completions without reading huge amounts of data.
+    const completedRecord = {
+      jobId: job.id,
+      type: job.type,
+      priority: job.priority,
+      attempts: job.attempts + 1,
+      completedAt: Date.now(),
+    };
+    await redis.rpush(QUEUE_KEYS.completed, JSON.stringify(completedRecord));
+
+    // LTRIM keeps only the most recent COMPLETED_LOG_MAX entries.
+    // -COMPLETED_LOG_MAX means "start from the end and go back N items."
+    // This is a single atomic Redis command, so the list never momentarily
+    // exceeds the cap even under high throughput.
+    await redis.ltrim(QUEUE_KEYS.completed, -COMPLETED_LOG_MAX, -1);
+
+    console.log(`[worker] job ${job.id} completed and removed from processing`);
+
+    // NEW: announce completion on the event bus.
+    queueEvents.emit("job:completed", {
+      jobId: job.id,
+      type: job.type,
+      completedAt: completedRecord.completedAt,
+    });
   } catch (err) {
     console.error(`[worker] job ${job.id} failed:`, (err as Error).message);
     await handleFailure(stampedRawJob, stampedJob, err as Error);

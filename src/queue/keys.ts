@@ -19,4 +19,14 @@ export const QUEUE_KEYS = {
   processing: "queue:processing",
   delayed: "queue:delayed",
   dead: "queue:dead",
+
+  // Added: a capped log of recently completed jobs. The worker RPUSH-es
+  // here on success and immediately LTRIM-s to the last 500 entries so
+  // this list never grows unbounded. Without this, there's no record of
+  // successful jobs — they're LREM'd from processing and simply vanish.
+  completed: "queue:completed",
 } as const;
+
+// How many completed jobs to keep in the log. Older entries are trimmed
+// automatically by the worker after every successful job.
+export const COMPLETED_LOG_MAX = 500;

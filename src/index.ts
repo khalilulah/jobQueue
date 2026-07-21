@@ -5,11 +5,16 @@ import {
 } from "./queue/worker";
 import { startDelayedJobPoller } from "./queue/delayed";
 import { startReaper } from "./queue/reaper";
+import { startApiServer } from "./api/server";
 
 const SHUTDOWN_TIMEOUT_MS = 15000; // give in-flight jobs up to 15s, then force-exit anyway
 
 async function main(): Promise<void> {
   console.log("[main] starting job queue system...");
+
+  // Start the HTTP + WebSocket server first so the dashboard can connect
+  // even before any jobs are processed.
+  startApiServer();
 
   // Each of these contains a `while (true)` loop that never resolves on
   // its own, so each is started un-awaited — this is what lets the worker,

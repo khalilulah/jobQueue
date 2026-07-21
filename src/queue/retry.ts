@@ -1,4 +1,5 @@
 import { redis } from "../config/redis";
+import { queueEvents } from "../events/queueEvents";
 import { QUEUE_KEYS } from "./keys";
 import { Job } from "./types";
 
@@ -54,6 +55,15 @@ export async function handleFailure(
     };
 
     await redis.rpush(QUEUE_KEYS.dead, JSON.stringify(deadJobRecord));
+
+    // NEW: announce DLQ move so the browser's DLQ screen updates live.
+    queueEvents.emit("job:dlq", {
+      jobId: job.id,
+      type: job.type,
+      attempts: updatedJob.attempts,
+      lastError: error.message,
+      failedAt: deadJobRecord.failedAt,
+    });
   } else {
     const delay = calculateBackoffDelay(updatedJob.attempts);
     const runAt = Date.now() + delay;
@@ -66,6 +76,17 @@ export async function handleFailure(
     // this is the delayed-jobs mechanism doing double duty for backoff,
     // exactly as discussed: one mechanism, two use cases.
     await redis.zadd(QUEUE_KEYS.delayed, runAt, JSON.stringify(updatedJob));
+
+    // NEW: announce the retry schedule so the browser can show the job
+    // in a "waiting to retry" state with a real timestamp, not a spinner.
+    queueEvents.emit("job:failed", {
+      jobId: job.id,
+      type: job.type,
+      attempt: updatedJob.attempts,
+      maxRetries: updatedJob.maxRetries,
+      nextRetryAt: runAt,
+      error: error.message,
+    });
   }
 
   // Either way: this job is no longer "in flight", so it comes out of

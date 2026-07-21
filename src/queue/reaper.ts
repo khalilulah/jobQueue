@@ -2,6 +2,7 @@ import { redis } from "../config/redis";
 import { QUEUE_KEYS } from "./keys";
 import { Job } from "./types";
 import { handleFailure } from "./retry";
+import { queueEvents } from "../events/queueEvents";
 
 const SWEEP_INTERVAL_MS = 5000;
 const VISIBILITY_TIMEOUT_MS = 10000; // how long a job can sit in processing before we assume its worker died
@@ -52,12 +53,16 @@ async function sweepStuckJobs(): Promise<void> {
       console.log(
         `[reaper] job ${job.id} has been in processing for ${age}ms (limit ${VISIBILITY_TIMEOUT_MS}ms) — reclaiming`,
       );
-      await reclaimJob(rawJob, job);
+      await reclaimJob(rawJob, job, age);
     }
   }
 }
 
-async function reclaimJob(rawJob: string, job: Job): Promise<void> {
+async function reclaimJob(
+  rawJob: string,
+  job: Job,
+  age: number,
+): Promise<void> {
   // Same atomicity concern as the delayed-job poller: removal must be the
   // thing that decides "did I actually get to claim this". If the job has
   // already been removed by the worker itself (it finished just as the
@@ -68,6 +73,15 @@ async function reclaimJob(rawJob: string, job: Job): Promise<void> {
   if (removedCount === 0) {
     return;
   }
+
+  // NEW: announce the reclaim before routing through handleFailure, so
+  // the browser sees "crash recovery" as a distinct event type rather
+  // than just seeing a job suddenly re-appear in the retry cycle.
+  queueEvents.emit("reaper:reclaimed", {
+    jobId: job.id,
+    type: job.type,
+    age,
+  });
 
   // From here on, this is functionally identical to a handler throwing —
   // we reuse the exact same retry/DLQ decision, just triggered by a
