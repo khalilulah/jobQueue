@@ -2,6 +2,7 @@ import { randomUUID } from "crypto";
 import { redis } from "../config/redis";
 import { QUEUE_KEYS, Priority } from "./keys";
 import { Job, EnqueueOptions } from "./types";
+import { queueEvents } from "../events/queueEvents";
 
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_PRIORITY: Priority = "medium";
@@ -29,6 +30,10 @@ export async function enqueue<TPayload>(
   const targetList = QUEUE_KEYS.pending[job.priority];
 
   await redis.rpush(targetList, JSON.stringify(job));
+
+  // New: announce the enqueue on the event bus. The producer doesn't know
+  // who's listening — it just fires the event and returns.
+  queueEvents.emit("job:enqueued", job as Job);
 
   return job.id;
 }
