@@ -12,6 +12,8 @@ export interface Job<TPayload = unknown> {
   priority: Priority; // defaults to 'medium' in producer.ts
   createdAt: number; // unix ms timestamp
   processingStartedAt?: number; // unix ms timestamp, set when a worker claims the job
+  lastError?: string;
+  failedAt?: number;
 }
 
 // What the caller of enqueue() actually has to provide.

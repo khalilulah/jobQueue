@@ -2,6 +2,9 @@ import express from "express";
 import { createServer } from "http";
 import { Server as SocketIOServer } from "socket.io";
 import { setupWebSocket } from "./websocket";
+import { statsRouter } from "./routes/stats";
+import { jobsRouter } from "./routes/jobs";
+import { dlqRouter } from "./routes/dlq";
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 3000;
 
@@ -43,9 +46,9 @@ export function startApiServer(): void {
   });
 
   // REST routes will be mounted here in the next step.
-  // app.use('/api/stats', statsRouter);
-  // app.use('/api/jobs', jobsRouter);
-  // app.use('/api/dlq', dlqRouter);
+  app.use("/api/stats", statsRouter);
+  app.use("/api/jobs", jobsRouter);
+  app.use("/api/dlq", dlqRouter);
 
   httpServer.listen(PORT, () => {
     console.log(`[api] server running on http://localhost:${PORT}`);
